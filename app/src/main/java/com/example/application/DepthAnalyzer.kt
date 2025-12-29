@@ -148,7 +148,7 @@ class DepthAnalyzer(
             val limitPercent = SCAN_END_Y.toFloat() / MODEL_HEIGHT.toFloat()
             overlayView.updateLimitLine(limitPercent)
         }
-
+            //perbaikan
         feedbackManager.update(zones)
     }
 }
