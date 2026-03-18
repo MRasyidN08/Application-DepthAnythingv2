@@ -13,8 +13,7 @@ class DepthModelExecutor(private val context: Context) {
 
     private var module: Module? = null
 
-    // PASTIKAN NAMA FILE INI SESUAI HASIL DOWNLOAD DARI COLAB
-    private val modelName = "depth_anything_v2_mobile_252.ptl"
+    private val modelName = "depth_anything_v2_vits_mobile_int8.ptl"
 
     init {
         loadModule()
@@ -34,10 +33,8 @@ class DepthModelExecutor(private val context: Context) {
         val m = module ?: return null
 
         return try {
-            // [PENTING] Ubah ukuran tensor input menjadi 252
-            val shape = longArrayOf(1, 3, 252, 252)
+            val shape = longArrayOf(1, 3, 518, 518)
             val inputTensor = Tensor.fromBlob(input, shape)
-
             val outputTensor = m.forward(IValue.from(inputTensor)).toTensor()
             outputTensor.dataAsFloatArray
         } catch (e: Exception) {
@@ -46,8 +43,20 @@ class DepthModelExecutor(private val context: Context) {
         }
     }
 
+    // =======================================================
+    // PERBAIKAN: Panggil destroy() agar native memory PyTorch
+    // benar-benar dibebaskan, bukan hanya di-nullify.
+    // Tanpa ini, memory native tidak di-GC oleh JVM dan bisa
+    // menyebabkan memory leak / OOM saat aplikasi ditutup.
+    // =======================================================
     fun close() {
-        module = null
+        try {
+            module?.destroy()
+        } catch (e: Exception) {
+            Log.e("Executor", "Error destroying module", e)
+        } finally {
+            module = null
+        }
     }
 
     private fun copyAssetIfNeeded(context: Context, name: String): String {

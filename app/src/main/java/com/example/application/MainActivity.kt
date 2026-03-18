@@ -21,22 +21,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var cameraExecutor: ExecutorService
 
-    // Komponen-komponen utama
     private var kotlinPreprocessor: KotlinPreprocessor? = null
     private var depthModelExecutor: DepthModelExecutor? = null
     private var feedbackManager: FeedbackManager? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // 1. Setup Binding
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-
-        // 2. Setup Executor untuk Kamera (Background Thread)
         cameraExecutor = Executors.newSingleThreadExecutor()
 
-        // 3. Inisialisasi Modul Helper
         try {
             kotlinPreprocessor = KotlinPreprocessor()
             depthModelExecutor = DepthModelExecutor(this)
@@ -46,7 +40,6 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Gagal memuat model AI", Toast.LENGTH_LONG).show()
         }
 
-        // 4. Cek Izin Kamera
         if (allPermissionsGranted()) {
             startCamera()
         } else {
@@ -58,79 +51,47 @@ class MainActivity : AppCompatActivity() {
 
     private fun startCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
-
         cameraProviderFuture.addListener({
-            // Mengikat ke Lifecycle Owner (Activity ini)
             val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
-
-            // Preview (Tampilan Kamera)
-            val preview = Preview.Builder()
-                .build()
-                .also {
-                    it.setSurfaceProvider(binding.viewFinder.surfaceProvider)
-                }
-
-            // Setup Image Analysis (Tempat proses AI berjalan)
-            // STRATEGY_KEEP_ONLY_LATEST penting agar tidak terjadi lag menumpuk
+            val preview = Preview.Builder().build().also {
+                it.setSurfaceProvider(binding.viewFinder.surfaceProvider)
+            }
             val imageAnalyzer = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                 .build()
 
-            // Mencegah crash jika komponen belum siap
             if (kotlinPreprocessor != null && depthModelExecutor != null && feedbackManager != null) {
-
-                // --- DISINI BAGIAN PENTINGNYA ---
-                // Kita memasukkan binding.overlayView agar Analyzer bisa menggambar angka jarak
                 val analyzer = DepthAnalyzer(
                     kotlinPreprocessor!!,
                     depthModelExecutor!!,
                     feedbackManager!!,
-                    binding.overlayView // <-- Pass OverlayView dari layout
+                    binding.overlayView
                 ) { fps ->
-                    // Update teks FPS di Thread UI Utama
                     runOnUiThread {
                         binding.fpsText.text = String.format("FPS: %.1f", fps)
                     }
                 }
-
                 imageAnalyzer.setAnalyzer(cameraExecutor, analyzer)
             }
 
-            // Pilih Kamera Belakang
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-
             try {
-                // Unbind use case sebelumnya sebelum binding baru
                 cameraProvider.unbindAll()
-
-                // Bind use cases ke kamera
-                cameraProvider.bindToLifecycle(
-                    this,
-                    cameraSelector,
-                    preview,
-                    imageAnalyzer
-                )
-
+                cameraProvider.bindToLifecycle(this, cameraSelector, preview, imageAnalyzer)
             } catch (exc: Exception) {
                 Log.e("MainActivity", "Gagal memunculkan kamera", exc)
                 Toast.makeText(this, "Gagal memunculkan kamera.", Toast.LENGTH_SHORT).show()
             }
-
         }, ContextCompat.getMainExecutor(this))
     }
 
-    // --- Bagian Permission (Izin) ---
     private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
-        ContextCompat.checkSelfPermission(
-            this, it
-        ) == PackageManager.PERMISSION_GRANTED
+        ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
     }
 
     override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<String>,
-        grantResults: IntArray
+        requestCode: Int, permissions: Array<String>, grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_CODE_PERMISSIONS) {
@@ -143,17 +104,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // --- Bagian Cleanup (Pembersihan Memori) ---
     override fun onDestroy() {
         super.onDestroy()
-        // Hentikan thread kamera
         cameraExecutor.shutdown()
-
-        // Tutup model AI untuk mencegah memory leak
         depthModelExecutor?.close()
-
-        // Matikan TTS (Text To Speech)
         feedbackManager?.release()
+        kotlinPreprocessor?.release() // Tambahan: bebaskan bitmap native
     }
 
     companion object {

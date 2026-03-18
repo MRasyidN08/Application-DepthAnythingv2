@@ -1,14 +1,14 @@
 package com.example.application
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Matrix
 import android.graphics.PixelFormat
 import androidx.camera.core.ImageProxy
 
 class KotlinPreprocessor {
-    // Ukuran Target (Versi Ringan)
-    private val TARGET_WIDTH = 252
-    private val TARGET_HEIGHT = 252
+    private val TARGET_WIDTH = 518
+    private val TARGET_HEIGHT = 518
 
     // Standar Normalisasi ImageNet (Wajib untuk Depth Anything)
     private val MEAN_R = 0.485f
@@ -19,78 +19,90 @@ class KotlinPreprocessor {
     private val STD_G = 0.224f
     private val STD_B = 0.225f
 
-    // Buffer Output (Ukuran 252)
     private val floatArray = FloatArray(1 * 3 * TARGET_WIDTH * TARGET_HEIGHT)
-    private var pixels = IntArray(TARGET_WIDTH * TARGET_HEIGHT)
+    private val pixels = IntArray(TARGET_WIDTH * TARGET_HEIGHT)
 
     private var inputBitmap: Bitmap? = null
-    private var scaledBitmap: Bitmap? = null
+    private var outputBitmap: Bitmap? = null
 
     fun preprocess(imageProxy: ImageProxy): FloatArray? {
-        // 1. Validasi Format (Harus RGBA_8888)
-        if (imageProxy.format != PixelFormat.RGBA_8888 && imageProxy.planes.size != 1) {
+        if (imageProxy.format != PixelFormat.RGBA_8888 || imageProxy.planes.size != 1) {
             return null
         }
 
         val width = imageProxy.width
         val height = imageProxy.height
+        val rotation = imageProxy.imageInfo.rotationDegrees.toFloat()
         val buffer = imageProxy.planes[0].buffer
 
-        // 2. Salin data kamera ke Bitmap Asli
+        // Salin buffer ke bitmap mentah
         if (inputBitmap == null || inputBitmap!!.width != width || inputBitmap!!.height != height) {
+            inputBitmap?.recycle()
             inputBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         }
         buffer.rewind()
         inputBitmap!!.copyPixelsFromBuffer(buffer)
 
-        // 3. Resize ke 252x252 (Downscale)
-        if (scaledBitmap == null) {
-            scaledBitmap = Bitmap.createBitmap(TARGET_WIDTH, TARGET_HEIGHT, Bitmap.Config.ARGB_8888)
+        // Siapkan bitmap output 518x518
+        if (outputBitmap == null) {
+            outputBitmap = Bitmap.createBitmap(TARGET_WIDTH, TARGET_HEIGHT, Bitmap.Config.ARGB_8888)
         }
 
-        // Hitung skala
-        val scaleX = TARGET_WIDTH.toFloat() / width
-        val scaleY = TARGET_HEIGHT.toFloat() / height
+        // =======================================================
+        // PERBAIKAN UTAMA: Bangun matrix yang benar-benar dipakai
+        // untuk menggambar ke outputBitmap via Canvas.
+        //
+        // Urutan operasi:
+        // 1. Rotasi dulu di sekitar pusat gambar asli
+        // 2. Scale ke ukuran target
+        //
+        // Dengan Canvas + Matrix, rotasi BENAR-BENAR diterapkan,
+        // berbeda dengan createScaledBitmap yang mengabaikan Matrix.
+        // =======================================================
         val matrix = Matrix()
-        matrix.postScale(scaleX, scaleY)
 
-        // Rotasi (Opsional: sesuaikan dengan orientasi device Anda)
-        val rotation = imageProxy.imageInfo.rotationDegrees.toFloat()
-        if (rotation != 0f) {
-            matrix.postRotate(rotation, TARGET_WIDTH/2f, TARGET_HEIGHT/2f)
+        // Tentukan dimensi setelah rotasi agar scaling proporsional
+        val (srcW, srcH) = if (rotation == 90f || rotation == 270f) {
+            height.toFloat() to width.toFloat()
+        } else {
+            width.toFloat() to height.toFloat()
         }
 
-        // Gambar ulang ke Bitmap Kecil (252x252)
-        val canvas = android.graphics.Canvas(scaledBitmap!!)
-        canvas.drawColor(android.graphics.Color.BLACK) // Reset background
+        val scaleX = TARGET_WIDTH / srcW
+        val scaleY = TARGET_HEIGHT / srcH
 
-        // Teknik createScaledBitmap lebih cepat untuk downscaling
-        val tempScaled = Bitmap.createScaledBitmap(inputBitmap!!, TARGET_WIDTH, TARGET_HEIGHT, true)
+        // Rotasi di sekitar pusat bitmap asli, lalu scale
+        matrix.postTranslate(-width / 2f, -height / 2f)   // geser ke pusat
+        matrix.postRotate(rotation)                         // rotasi
+        matrix.postTranslate(srcW / 2f, srcH / 2f)        // kembalikan
+        matrix.postScale(scaleX, scaleY)                   // scale ke target
 
-        // 4. Ambil Pixels
-        tempScaled.getPixels(pixels, 0, TARGET_WIDTH, 0, 0, TARGET_WIDTH, TARGET_HEIGHT)
+        val canvas = Canvas(outputBitmap!!)
+        canvas.drawBitmap(inputBitmap!!, matrix, null)
 
-        if (tempScaled != inputBitmap) {
-            tempScaled.recycle()
-        }
+        // Ambil piksel dari outputBitmap yang sudah dirotasi & discale
+        outputBitmap!!.getPixels(pixels, 0, TARGET_WIDTH, 0, 0, TARGET_WIDTH, TARGET_HEIGHT)
 
-        // 5. KONVERSI KE FLOAT + NORMALISASI
+        // Normalisasi ke format CHW (Channel, Height, Width) untuk PyTorch
         val area = TARGET_WIDTH * TARGET_HEIGHT
-
         for (i in pixels.indices) {
             val pixel = pixels[i]
-
-            // Ekstrak RGB
             val rInt = (pixel shr 16) and 0xFF
             val gInt = (pixel shr 8) and 0xFF
-            val bInt = (pixel) and 0xFF
+            val bInt = pixel and 0xFF
 
-            // Rumus: ( (Value/255.0) - Mean ) / Std
-            floatArray[i] = ((rInt / 255.0f) - MEAN_R) / STD_R
-            floatArray[i + area] = ((gInt / 255.0f) - MEAN_G) / STD_G
+            floatArray[i]            = ((rInt / 255.0f) - MEAN_R) / STD_R
+            floatArray[i + area]     = ((gInt / 255.0f) - MEAN_G) / STD_G
             floatArray[i + area * 2] = ((bInt / 255.0f) - MEAN_B) / STD_B
         }
 
         return floatArray
+    }
+
+    fun release() {
+        inputBitmap?.recycle()
+        inputBitmap = null
+        outputBitmap?.recycle()
+        outputBitmap = null
     }
 }
